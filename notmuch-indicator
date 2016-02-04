@@ -5,11 +5,15 @@ import gi.repository.Gtk as Gtk
 import gi.repository.Gio as Gio
 import gi.repository.GObject as GObject
 from time import time
-import logging
+
 import notmuch
-import subprocess
-import os.path
+
 import json
+import logging
+import os
+import os.path
+import signal
+import subprocess
 
 default_config = {
         'poll_period': 2*60,  # seconds
@@ -30,16 +34,20 @@ watch_file = config['watch_file']
 searches = config['searches']
 desktop_file = config['desktop_file']
 
-#logging.basicConfig(level=logging.DEBUG)
+logging.basicConfig(level=logging.DEBUG)
 
 app = None
+waitlist = set()
 
 def display_search_client(query):
         p = subprocess.Popen(['emacsclient', '-s', 'notmuch', '-e', '(notmuch-search "%s")' % query],)
+        pid = p.pid
+        waitlist.add(pid)
         if p.wait() != 0:
                 subprocess.Popen(['emacs', '--daemon=notmuch', '--eval', '(notmuch-search "%s")' % query])
                 subprocess.Popen(['emacsclient', '-s', 'notmuch', '-e', '(notmuch-search "%s")' % query],)
         subprocess.Popen(['xdotool', 'search', 'class=emacs', 'windowactivate'])
+        waitlist.remove(pid)
 
 def start_notmuch():
         subprocess.Popen(['emacs', '--eval', '(notmuch-hello)'])
@@ -48,7 +56,10 @@ def display_search_noclient(query):
         subprocess.Popen(['emacs', '--eval', '(notmuch-search "%s")' % query])
         subprocess.Popen(['xdotool', 'search', 'class=emacs', 'windowactivate'])
 
-display_search = display_search_noclient
+def display_search_vim(query):
+        subprocess.Popen(['gvim', '-c', ':NotMuch %s' % query])
+
+display_search = display_search_vim
 
 def display_source_cb(app, source):
         logging.info('indicator display: %s' % source)
@@ -61,6 +72,9 @@ def get_counts():
                 q = notmuch.Query(db, query)
                 counts[name] = q.count_messages()
         return counts
+
+def wait_child(signum, sigframe): # noqa
+        os.waitpid(-1, os.WNOHANG)
 
 def update():
         counts = get_counts()
@@ -86,6 +100,9 @@ def main():
         app.register()
 
         have_update_condition = False
+
+        # catch dying children
+        signal.signal(signal.SIGCHLD, wait_child)
 
         if poll_period is not None:
                 logging.info('Polling every %d seconds' % poll_period)
